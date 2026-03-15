@@ -12,9 +12,9 @@ PINCODES = {
 
 # Column names in FSN Master sheet (only 3 required, rest optional)
 INPUT_COLUMNS = {
-    "fsn": "Flipkart Serial Number",
+    "fsn": "FLipkart Serial Number",
     "title": "Product Title",
-    "subcategory": "Sub-category",
+    "subcategory": "Sub- category",
     # Optional columns (included if present in sheet)
     "sku": "Seller SKU Id",
     "status": "Listing Status",
