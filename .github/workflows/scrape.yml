@@ -51,9 +51,9 @@ jobs:
           retention-days: 30
 
       - name: Commit results to repo
+        if: always()
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add output/*.csv logs/*.log
-          git diff-index --quiet HEAD || git commit -m "Scrape: $(date +'%Y-%m-%d %H:%M') UTC"
-          git push
+          git add output/ logs/ || true
+          git diff-index --quiet HEAD || git commit -m "Scrape: $(date +'%Y-%m-%d %H:%M') UTC" && git push || true
