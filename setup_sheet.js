@@ -75,26 +75,36 @@ async function main() {
   const token = await getToken();
   console.log('Authenticated as:', sa.client_email);
 
-  // Create spreadsheet with 4 tabs
-  console.log('Creating Google Sheet...');
-  const createBody = {
-    properties: { title: 'Flipkart Scraper — Frido' },
-    sheets: [
-      { properties: { title: 'FSN Master', index: 0 } },
-      { properties: { title: 'Latest Snapshot', index: 1 } },
-      { properties: { title: 'Historical Log', index: 2 } },
-      { properties: { title: 'OOS Alerts', index: 3 } },
-    ]
+  // Step 1: Create blank spreadsheet via Drive API
+  console.log('Creating Google Sheet via Drive API...');
+  const driveBody = {
+    name: 'Flipkart Scraper — Frido',
+    mimeType: 'application/vnd.google-apps.spreadsheet'
   };
-
-  const sheet = await apiCall('POST', 'sheets.googleapis.com',
-    '/v4/spreadsheets', createBody, token);
-
-  const sheetId = sheet.spreadsheetId;
-  const sheetUrl = sheet.spreadsheetUrl;
+  const driveResult = await apiCall('POST', 'www.googleapis.com',
+    '/drive/v3/files', driveBody, token);
+  const sheetId = driveResult.id;
+  const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetId}`;
   console.log('Sheet created!');
   console.log('  ID:', sheetId);
   console.log('  URL:', sheetUrl);
+
+  // Step 2: Rename default "Sheet1" to "FSN Master" and add 3 more tabs
+  console.log('Configuring tabs...');
+  const meta = await apiCall('GET', 'sheets.googleapis.com',
+    `/v4/spreadsheets/${sheetId}?fields=sheets.properties`, null, token);
+  const defaultSheetId = meta.sheets[0].properties.sheetId;
+
+  await apiCall('POST', 'sheets.googleapis.com',
+    `/v4/spreadsheets/${sheetId}:batchUpdate`, {
+      requests: [
+        { updateSheetProperties: { properties: { sheetId: defaultSheetId, title: 'FSN Master' }, fields: 'title' } },
+        { addSheet: { properties: { title: 'Latest Snapshot' } } },
+        { addSheet: { properties: { title: 'Historical Log' } } },
+        { addSheet: { properties: { title: 'OOS Alerts' } } },
+      ]
+    }, token);
+  console.log('4 tabs created: FSN Master, Latest Snapshot, Historical Log, OOS Alerts');
 
   // Write FSN Master headers
   console.log('Writing FSN Master headers...');
