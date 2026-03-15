@@ -10,14 +10,15 @@ PINCODES = {
     "411001": "Pune",
 }
 
-# Column names from Flipkart Seller Panel export (EXACT match required)
+# Column names in FSN Master sheet (only 3 required, rest optional)
 INPUT_COLUMNS = {
     "fsn": "Flipkart Serial Number",
-    "sku": "Seller SKU Id",
     "title": "Product Title",
     "subcategory": "Sub-category",
-    "listing_id": "Listing ID",
+    # Optional columns (included if present in sheet)
+    "sku": "Seller SKU Id",
     "status": "Listing Status",
+    "listing_id": "Listing ID",
     "mrp": "MRP",
     "selling_price": "Your Selling Price",
     "fulfillment": "Fulfillment By",

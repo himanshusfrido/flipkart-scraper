@@ -14,17 +14,21 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+# Only these 3 are required; the rest are optional
 REQUIRED_COLUMNS = [
-    INPUT_COLUMNS["title"],
-    INPUT_COLUMNS["sku"],
-    INPUT_COLUMNS["subcategory"],
     INPUT_COLUMNS["fsn"],
-    INPUT_COLUMNS["listing_id"],
-    INPUT_COLUMNS["status"],
-    INPUT_COLUMNS["mrp"],
-    INPUT_COLUMNS["selling_price"],
-    INPUT_COLUMNS["fulfillment"],
-    INPUT_COLUMNS["stock"],
+    INPUT_COLUMNS["subcategory"],
+    INPUT_COLUMNS["title"],
+]
+
+OPTIONAL_COLUMNS = [
+    INPUT_COLUMNS.get("sku", ""),
+    INPUT_COLUMNS.get("status", ""),
+    INPUT_COLUMNS.get("listing_id", ""),
+    INPUT_COLUMNS.get("mrp", ""),
+    INPUT_COLUMNS.get("selling_price", ""),
+    INPUT_COLUMNS.get("fulfillment", ""),
+    INPUT_COLUMNS.get("stock", ""),
 ]
 
 
@@ -58,23 +62,25 @@ def load_fsn_from_sheets():
 
     df = pd.DataFrame(all_data)
 
-    # Keep only required columns (handle missing gracefully)
-    available = [c for c in REQUIRED_COLUMNS if c in df.columns]
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
-    if missing:
-        logger.warning(f"Missing columns in FSN Master sheet: {missing}")
-    df = df[available].copy()
+    # Check required columns exist
+    missing_required = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing_required:
+        raise ValueError(f"Missing required columns in FSN Master sheet: {missing_required}")
 
-    # Filter only ACTIVE listings
-    status_col = INPUT_COLUMNS["status"]
-    if status_col in df.columns:
+    # Keep required + any optional columns that are present
+    all_wanted = REQUIRED_COLUMNS + [c for c in OPTIONAL_COLUMNS if c and c in df.columns]
+    df = df[[c for c in all_wanted if c in df.columns]].copy()
+
+    # Filter only ACTIVE listings (if Listing Status column exists)
+    status_col = INPUT_COLUMNS.get("status", "")
+    if status_col and status_col in df.columns:
         df = df[df[status_col].astype(str).str.strip().str.upper() == "ACTIVE"]
 
     # Remove rows with empty FSN
     fsn_col = INPUT_COLUMNS["fsn"]
     df = df[df[fsn_col].notna() & (df[fsn_col].astype(str).str.strip() != "")]
 
-    logger.info(f"Loaded {len(df)} ACTIVE FSNs from Google Sheets")
+    logger.info(f"Loaded {len(df)} FSNs from Google Sheets")
 
     # Group by Sub-category
     subcat_col = INPUT_COLUMNS["subcategory"]
