@@ -1,4 +1,4 @@
-name: Flipkart FSN Scraper — Frido
+name: Flipkart FSN Scraper
 
 on:
   schedule:
