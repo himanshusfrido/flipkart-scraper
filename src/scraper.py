@@ -212,25 +212,39 @@ async def scrape_fsn_pincode(
 
 
 async def scrape_subcategory(
-    subcategory: str, fsn_rows: list, session: aiohttp.ClientSession
+    subcategory: str, fsn_rows: list, session: aiohttp.ClientSession,
+    browser=None,
 ) -> list:
-    """Scrape all FSNs in one sub-category. Runs as one concurrent task."""
+    """Scrape all FSNs in one sub-category using Playwright (primary) or aiohttp (fallback)."""
+    from src.browser_scraper import scrape_fsn_with_browser
+
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_PER_SUBCATEGORY)
     results = []
     total = len(fsn_rows)
 
-    logger.info(f"[{subcategory}] Starting scrape of {total} FSNs")
+    logger.info(f"[{subcategory}] Starting scrape of {total} FSNs (browser={'yes' if browser else 'no'})")
 
     async def scrape_single_fsn(row: dict, idx: int):
         async with semaphore:
             fsn = row.get(INPUT_COLUMNS["fsn"], "unknown")
-            logger.info(
-                f"[{subcategory}] Scraping FSN {idx + 1}/{total}: {fsn}"
-            )
+            logger.info(f"[{subcategory}] [{idx + 1}/{total}] {fsn}")
+
+            if browser:
+                # Primary: Playwright browser (gets delivery dates)
+                try:
+                    fsn_results = await scrape_fsn_with_browser(
+                        browser, fsn, row, PINCODES
+                    )
+                    results.extend(fsn_results)
+                    await asyncio.sleep(RATE_LIMIT_DELAY + random.uniform(0, RATE_LIMIT_JITTER))
+                    return
+                except Exception as e:
+                    logger.error(f"[{subcategory}] Browser failed for {fsn}: {e}")
+
+            # Fallback: aiohttp (no delivery dates)
             for pincode, city in PINCODES.items():
                 result = await scrape_fsn_pincode(session, row, pincode, city)
                 results.append(result)
-                # Rate limiting with jitter
                 delay = RATE_LIMIT_DELAY + random.uniform(0, RATE_LIMIT_JITTER)
                 await asyncio.sleep(delay)
 
@@ -238,9 +252,7 @@ async def scrape_subcategory(
     await asyncio.gather(*tasks, return_exceptions=True)
 
     success = sum(1 for r in results if r.get("scrape_status") == "success")
-    logger.info(
-        f"[{subcategory}] Done: {success}/{len(results)} successful scrapes"
-    )
+    logger.info(f"[{subcategory}] Done: {success}/{len(results)} successful scrapes")
 
     return results
 

@@ -10,6 +10,7 @@ from datetime import datetime
 from src.config import OUTPUT_DIR, LOG_DIR, PINCODES
 from src.sheets_reader import load_fsn_from_sheets
 from src.scraper import scrape_subcategory
+from src.browser_scraper import create_browser, close_browser
 from src.sheets_writer import push_to_sheets
 from src.notifier import send_slack_summary
 
@@ -57,18 +58,32 @@ async def orchestrate():
     )
     logger.info(f"Sub-categories: {list(fsn_data.keys())}")
 
-    # Step 2: Scrape all sub-categories concurrently
+    # Step 2: Launch browser + scrape all sub-categories concurrently
+    logger.info("Step 2: Launching Playwright browser...")
+    pw, browser = None, None
+    try:
+        pw, browser = await create_browser()
+    except Exception as e:
+        logger.warning(f"Playwright launch failed ({e}), falling back to aiohttp only")
+
     logger.info("Step 2: Starting concurrent scraping...")
 
     connector = aiohttp.TCPConnector(limit=20, force_close=True)
     async with aiohttp.ClientSession(connector=connector) as session:
         subcategory_tasks = [
-            scrape_subcategory(subcat, rows, session)
+            scrape_subcategory(subcat, rows, session, browser=browser)
             for subcat, rows in fsn_data.items()
         ]
         all_results = await asyncio.gather(
             *subcategory_tasks, return_exceptions=True
         )
+
+    # Close browser
+    if pw and browser:
+        try:
+            await close_browser(pw, browser)
+        except Exception:
+            pass
 
     # Step 3: Flatten results, handle exceptions
     flat_results = []
