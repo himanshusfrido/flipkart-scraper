@@ -142,19 +142,32 @@ async def _check_pincode(page: Page, pincode: str) -> dict:
     result = {"in_stock": None, "delivery_date": None}
 
     try:
-        # Click delivery location link
-        await page.evaluate("""() => {
-            const els = document.querySelectorAll('a, div, span');
+        # Click delivery location trigger — partial, case-insensitive matching
+        click_result = await page.evaluate("""() => {
+            const triggers = ['select delivery location', 'enter pincode', 'change'];
+            let best = null;
+            let bestLen = Infinity;
+            const els = document.querySelectorAll('a, div, span, button');
             for (const el of els) {
-                const t = el.textContent.trim();
-                if (t === 'Select delivery location' || t === 'Change' || t === 'Enter pincode') {
-                    el.click();
-                    break;
+                const t = (el.textContent || '').trim().toLowerCase();
+                if (t.length > 50) continue;
+                for (const trigger of triggers) {
+                    if (t === trigger || t.includes(trigger)) {
+                        if (t.length < bestLen) { best = el; bestLen = t.length; }
+                    }
+                }
+                // Also match 6-digit pincode display (e.g. "110001")
+                if (/^\\d{6}$/.test(t) && t.length < bestLen) {
+                    best = el; bestLen = t.length;
                 }
             }
+            if (best) { best.click(); return { clicked: true, text: best.textContent.trim().substring(0, 40) }; }
+            return { clicked: false, text: null };
         }""")
+        logger.debug(f"Pincode {pincode}: trigger={click_result.get('text', 'NONE')}")
 
         # Wait for pincode input
+        input_found = False
         try:
             await page.wait_for_function("""() => {
                 const inputs = document.querySelectorAll('input');
@@ -164,34 +177,61 @@ async def _check_pincode(page: Page, pincode: str) -> dict:
                 }
                 return false;
             }""", timeout=5000)
+            input_found = True
         except Exception:
-            pass
+            # Fallback: try clicking pincode display text
+            try:
+                await page.evaluate("""() => {
+                    const els = document.querySelectorAll('span, div, a');
+                    for (const el of els) {
+                        const t = (el.textContent || '').trim();
+                        if (/^\\d{6}$/.test(t)) { el.click(); return; }
+                    }
+                }""")
+                await page.wait_for_function("""() => {
+                    const inputs = document.querySelectorAll('input');
+                    for (const inp of inputs) {
+                        const ph = (inp.placeholder || '').toLowerCase();
+                        if (ph.includes('pincode') || ph.includes('pin code') || ph.includes('enter')) return true;
+                    }
+                    return false;
+                }""", timeout=3000)
+                input_found = True
+            except Exception:
+                pass
 
-        # Fill pincode using native setter (React-compatible)
-        await page.evaluate("""(pin) => {
-            const inputs = document.querySelectorAll('input');
-            for (const inp of inputs) {
-                const ph = (inp.placeholder || '').toLowerCase();
-                if (ph.includes('pincode') || ph.includes('pin code') || ph.includes('enter')) {
-                    const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                    nativeSet.call(inp, pin);
-                    inp.dispatchEvent(new Event('input', { bubbles: true }));
-                    inp.dispatchEvent(new Event('change', { bubbles: true }));
-                    break;
+        if input_found:
+            # Clear existing value, then fill new pincode
+            await page.evaluate("""(pin) => {
+                const inputs = document.querySelectorAll('input');
+                for (const inp of inputs) {
+                    const ph = (inp.placeholder || '').toLowerCase();
+                    if (ph.includes('pincode') || ph.includes('pin code') || ph.includes('enter')) {
+                        inp.focus();
+                        inp.select();
+                        const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        nativeSet.call(inp, '');
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        nativeSet.call(inp, pin);
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        break;
+                    }
                 }
-            }
-        }""", pincode)
-        await asyncio.sleep(0.5)
+            }""", pincode)
+            await asyncio.sleep(0.5)
 
-        # Click Apply/Check
-        await page.evaluate("""() => {
-            const btns = document.querySelectorAll('button, span');
-            for (const b of btns) {
-                const t = b.textContent.trim();
-                if (t === 'Apply' || t === 'Check' || t === 'Submit') { b.click(); break; }
-            }
-        }""")
-        await asyncio.sleep(PINCODE_WAIT / 1000)
+            # Click Apply/Check (partial match)
+            await page.evaluate("""() => {
+                const btns = document.querySelectorAll('button, span');
+                for (const b of btns) {
+                    const t = (b.textContent || '').trim().toLowerCase();
+                    if (t === 'apply' || t === 'check' || t === 'submit') { b.click(); break; }
+                }
+            }""")
+            await asyncio.sleep(PINCODE_WAIT / 1000)
+        else:
+            logger.warning(f"Pincode {pincode}: input not found after clicking trigger")
 
         # Extract delivery info
         delivery = await page.evaluate("""() => {
@@ -202,20 +242,32 @@ async def _check_pincode(page: Page, pincode: str) -> dict:
                 return { available: false, dd: 'Not Serviceable' };
 
             let dd = 'N/A';
+            const delivIdx = bt.indexOf('Delivery details');
+            const scopedText = delivIdx > -1 ? bt.substring(delivIdx, delivIdx + 500) : bt;
+
             const patterns = [
                 /Delivery\\s+by\\s+(\\d+\\s+\\w+,?\\s*\\w*)/i,
                 /Delivery\\s*\\n\\s*by\\s+(\\d+\\s+\\w+,?\\s*\\w*)/i,
+                /Delivered\\s+by\\s+(\\d+\\s+\\w+,?\\s*\\w*)/i,
                 /Get it by\\s+(\\d+\\s+\\w+,?\\s*\\w*)/i,
+                /Delivery in\\s+(\\d+\\s+\\w+)/i,
             ];
             for (const p of patterns) {
-                const m = bt.match(p);
+                const m = scopedText.match(p);
                 if (m) { dd = m[1].trim().replace(/,?\\s*(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/i, ''); break; }
+            }
+            if (dd === 'N/A') {
+                for (const p of patterns) {
+                    const m = bt.match(p);
+                    if (m) { dd = m[1].trim().replace(/,?\\s*(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/i, ''); break; }
+                }
             }
             return { available: true, dd };
         }""")
 
         result["in_stock"] = delivery.get("available", None)
         result["delivery_date"] = delivery.get("dd", "N/A")
+        logger.debug(f"Pincode {pincode}: delivery={result['delivery_date']}, stock={result['in_stock']}")
 
     except Exception as e:
         logger.error(f"Pincode {pincode} check error: {e}")
