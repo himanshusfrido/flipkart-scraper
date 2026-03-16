@@ -141,64 +141,72 @@ async def _check_pincode(page: Page, pincode: str) -> dict:
     """Enter pincode and extract delivery info."""
     result = {"in_stock": None, "delivery_date": None}
 
-    try:
-        # Click delivery location trigger — partial, case-insensitive matching
-        click_result = await page.evaluate("""() => {
-            const triggers = ['select delivery location', 'enter pincode', 'change'];
-            let best = null;
-            let bestLen = Infinity;
-            const els = document.querySelectorAll('a, div, span, button');
-            for (const el of els) {
-                const t = (el.textContent || '').trim().toLowerCase();
-                if (t.length > 50) continue;
-                for (const trigger of triggers) {
-                    if (t === trigger || t.includes(trigger)) {
-                        if (t.length < bestLen) { best = el; bestLen = t.length; }
-                    }
-                }
-                // Also match 6-digit pincode display (e.g. "110001")
-                if (/^\\d{6}$/.test(t) && t.length < bestLen) {
-                    best = el; bestLen = t.length;
-                }
-            }
-            if (best) { best.click(); return { clicked: true, text: best.textContent.trim().substring(0, 40) }; }
-            return { clicked: false, text: null };
-        }""")
-        logger.debug(f"Pincode {pincode}: trigger={click_result.get('text', 'NONE')}")
+    PINCODE_INPUT_CHECK = """() => {
+        const inputs = document.querySelectorAll('input');
+        for (const inp of inputs) {
+            const ph = (inp.placeholder || '').toLowerCase();
+            if (ph.includes('pincode') || ph.includes('pin code') || ph.includes('enter pin')) return true;
+        }
+        return false;
+    }"""
 
-        # Wait for pincode input
-        input_found = False
+    try:
+        # Bug C fix: check if pincode input is already visible (popup still open)
+        input_already_visible = False
         try:
-            await page.wait_for_function("""() => {
-                const inputs = document.querySelectorAll('input');
-                for (const inp of inputs) {
-                    const ph = (inp.placeholder || '').toLowerCase();
-                    if (ph.includes('pincode') || ph.includes('pin code') || ph.includes('enter')) return true;
-                }
-                return false;
-            }""", timeout=5000)
-            input_found = True
+            input_already_visible = await page.evaluate(PINCODE_INPUT_CHECK)
         except Exception:
-            # Fallback: try clicking pincode display text
+            pass
+
+        if not input_already_visible:
+            # Bug A fix: exact match for 'change' to avoid matching 'exchange offer'
+            click_result = await page.evaluate("""() => {
+                const partialTriggers = ['select delivery location', 'enter pincode'];
+                let best = null;
+                let bestLen = Infinity;
+                const els = document.querySelectorAll('a, div, span, button');
+                for (const el of els) {
+                    const t = (el.textContent || '').trim().toLowerCase();
+                    if (t.length > 50) continue;
+                    if (t === 'change' && t.length < bestLen) {
+                        best = el; bestLen = t.length; continue;
+                    }
+                    for (const trigger of partialTriggers) {
+                        if (t.includes(trigger) && t.length < bestLen) {
+                            best = el; bestLen = t.length;
+                        }
+                    }
+                    if (/^\\d{6}$/.test(t) && t.length < bestLen) {
+                        best = el; bestLen = t.length;
+                    }
+                }
+                if (best) { best.click(); return { clicked: true, text: best.textContent.trim().substring(0, 40) }; }
+                return { clicked: false, text: null };
+            }""")
+            logger.debug(f"Pincode {pincode}: trigger={click_result.get('text', 'NONE')}")
+        else:
+            logger.debug(f"Pincode {pincode}: input already visible")
+
+        # Bug B fix: use 'enter pin' instead of bare 'enter'
+        input_found = input_already_visible
+        if not input_found:
             try:
-                await page.evaluate("""() => {
-                    const els = document.querySelectorAll('span, div, a');
-                    for (const el of els) {
-                        const t = (el.textContent || '').trim();
-                        if (/^\\d{6}$/.test(t)) { el.click(); return; }
-                    }
-                }""")
-                await page.wait_for_function("""() => {
-                    const inputs = document.querySelectorAll('input');
-                    for (const inp of inputs) {
-                        const ph = (inp.placeholder || '').toLowerCase();
-                        if (ph.includes('pincode') || ph.includes('pin code') || ph.includes('enter')) return true;
-                    }
-                    return false;
-                }""", timeout=3000)
+                await page.wait_for_function(PINCODE_INPUT_CHECK, timeout=5000)
                 input_found = True
             except Exception:
-                pass
+                # Fallback: try clicking pincode display text
+                try:
+                    await page.evaluate("""() => {
+                        const els = document.querySelectorAll('span, div, a');
+                        for (const el of els) {
+                            const t = (el.textContent || '').trim();
+                            if (/^\\d{6}$/.test(t)) { el.click(); return; }
+                        }
+                    }""")
+                    await page.wait_for_function(PINCODE_INPUT_CHECK, timeout=3000)
+                    input_found = True
+                except Exception:
+                    pass
 
         if input_found:
             # Clear existing value, then fill new pincode
@@ -206,7 +214,7 @@ async def _check_pincode(page: Page, pincode: str) -> dict:
                 const inputs = document.querySelectorAll('input');
                 for (const inp of inputs) {
                     const ph = (inp.placeholder || '').toLowerCase();
-                    if (ph.includes('pincode') || ph.includes('pin code') || ph.includes('enter')) {
+                    if (ph.includes('pincode') || ph.includes('pin code') || ph.includes('enter pin')) {
                         inp.focus();
                         inp.select();
                         const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
@@ -221,24 +229,25 @@ async def _check_pincode(page: Page, pincode: str) -> dict:
             }""", pincode)
             await asyncio.sleep(0.5)
 
-            # Click Apply/Check (partial match)
+            # Bug D fix: partial match for Apply button variants
             await page.evaluate("""() => {
+                const actionWords = ['apply', 'check', 'submit', 'update'];
                 const btns = document.querySelectorAll('button, span');
                 for (const b of btns) {
                     const t = (b.textContent || '').trim().toLowerCase();
-                    if (t === 'apply' || t === 'check' || t === 'submit') { b.click(); break; }
+                    if (actionWords.some(w => t.includes(w)) && t.length < 30) { b.click(); break; }
                 }
             }""")
             await asyncio.sleep(PINCODE_WAIT / 1000)
         else:
             logger.warning(f"Pincode {pincode}: input not found after clicking trigger")
 
-        # Extract delivery info
+        # Bug E fix: added 'delivery not available' check
         delivery = await page.evaluate("""() => {
             const bt = document.body.innerText;
             if (bt.includes('Currently unavailable') || bt.includes('Sold Out') || bt.includes('Out of stock'))
                 return { available: false, dd: 'N/A' };
-            if (bt.includes('not serviceable') || bt.includes('Cannot be delivered'))
+            if (bt.includes('not serviceable') || bt.includes('Cannot be delivered') || bt.includes('delivery not available'))
                 return { available: false, dd: 'Not Serviceable' };
 
             let dd = 'N/A';
